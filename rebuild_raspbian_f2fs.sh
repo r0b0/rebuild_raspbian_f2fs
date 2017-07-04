@@ -12,7 +12,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # install necessary tools
-apt-get install -y curl unzip kpartx f2fs-tools
+apt-get install -y curl unzip kpartx f2fs-tools rsync qemu-user-static
 
 # download image
 if [[ ! -f raspbian_lite_latest.zip ]]; then
@@ -36,32 +36,56 @@ kpartx -d $ORIG_IMAGE
 kpartx -d $TARGET_IMAGE
 
 # re-map the partitions
-ORIG_DEVS=($(kpartx -av $ORIG_IMAGE | cut -f 3 -d ' '))
-TARGET_DEVS=($(kpartx -av $TARGET_IMAGE | cut -f 3 -d ' '))
-ORIG_BOOT_DEV="/dev/mapper/${ORIG_DEVS[0]}"
+ORIG_DEVS=($(kpartx -avs $ORIG_IMAGE | cut -f 3 -d ' '))
+TARGET_DEVS=($(kpartx -avs $TARGET_IMAGE | cut -f 3 -d ' '))
 ORIG_ROOT_DEV="/dev/mapper/${ORIG_DEVS[1]}"
 TARGET_BOOT_DEV="/dev/mapper/${TARGET_DEVS[0]}"
 TARGET_ROOT_DEV="/dev/mapper/${TARGET_DEVS[1]}"
-echo "Orig devices: $ORIG_BOOT_DEV, $ORIG_ROOT_DEV"
-echo "Target devices: $TARGET_BOOT_DEV, $TARGET_ROOT_DEV"
+
+ls -la $ORIG_ROOT_DEV $TARGET_ROOT_DEV $TARGET_BOOT_DEV
 
 # format target root device to f2fs
 mkfs.f2fs $TARGET_ROOT_DEV
 
-# mount the devices
+# create directory structure for mounts
 if [[ ! -d target ]]; then
 	mkdir target
-fi
-
-if [[ ! -d target/boot ]]; then
-	mkdir target/boot
 fi
 
 if [[ ! -d orig ]]; then
 	mkdir orig
 fi
 
+# mount roots
 mount $TARGET_ROOT_DEV target
 mount $ORIG_ROOT_DEV orig
 
+# copy root
+rsync -axv orig/ target
+
+# umount orig
+umount $ORIG_ROOT_DEV
+
+# copy over qemu arm
+cp /usr/bin/qemu-arm-static target/usr/bin/
+
+# mount boot
+mount $TARGET_BOOT_DEV target/boot
+
+# tweak the image for f2fs
+chroot target/ apt-get install -y f2fs-tools
+chroot target/ update-initramfs -u
+chroot target/ sed -i 's/rootfstype=ext4/rootfstype=f2fs/' /boot/cmdline.txt
+
+# remove qemu arm from target
+rm -f target/usr/bin/qemu-arm-static 
+
+umount $TARGET_BOOT_DEV
+umount $TARGET_ROOT_DEV
+
+kpartx -d $ORIG_IMAGE
+kpartx -d $TARGET_IMAGE
+
+echo "Please find f2fs raspbian image in:"
+ls -lh $TARGET_IMAGE
 
